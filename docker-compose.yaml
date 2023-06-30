@@ -1,0 +1,124 @@
+# Use root/example as user/password credentials
+version: '3.1'
+services:
+  loki:
+    container_name: loki
+    image: grafana/loki:2.8.0
+    # ports:
+    #   - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=false"
+    networks:
+      - grafana
+
+  promtail:
+    container_name: promtail
+    image: grafana/promtail:2.8.0
+    volumes:
+      - /var/log:/var/log
+    command: -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=false"
+    networks:
+      - grafana
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana-oss
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - promtail
+      - loki
+      - prometheus
+      - cadvisor
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources
+        cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
+        apiVersion: 1
+        datasources:
+        - name: Loki
+          type: loki
+          access: proxy 
+          orgId: 1
+          url: http://loki:3100
+          basicAuth: false
+          isDefault: true
+          version: 1
+          editable: false
+        EOF
+        /run.sh
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.hogin.pro`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+      - "traefik.http.routers.grafana.tls.certresolver=myresolver"
+      - "traefik.docker.network=traefik"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    networks:
+      - grafana
+      - traefik
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus
+    restart: unless-stopped
+    ports:
+      - 9090:9090
+    labels:
+      - "traefik.enable=false"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus:/prometheus
+    networks:
+      - grafana
+      - traefik
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /sys/fs/cgroup:/cgroup:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - '-housekeeping_interval=15s'
+      - '-docker_only=true'
+    devices:
+      - /dev/kmsg
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "8083:8080"
+    networks:
+      - grafana
+    labels:
+      - "traefik.enable=false"
+
+networks:
+  grafana:
+    name: grafana
+  traefik:
+    name: traefik
+volumes:
+  grafana-storage:
+    name: grafana-storage
+  prometheus:
+    name: prometheus
